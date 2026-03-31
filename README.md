@@ -85,28 +85,13 @@ pip install -r requirements.txt
 
 ### 4. Configure environment
 
-Create a `.env` file (see `.env.example`):
+Create a `.env` file by copying the template:
 
-```env
-LLM_API_URL=http://localhost:11434/api/generate
-LLM_MODEL_NAME=hf.co/linhma139/Phi-3-IELTS-Scorer:Q4_K_M
-LLM_TIMEOUT=120
-
-RABBITMQ_URL=amqp://guest:guest@localhost:5672/
-MQ_PREFETCH_COUNT=1
-MQ_EXCHANGE_NAME=ai_service
-MQ_EXCHANGE_TYPE=direct
-
-WRITING_QUEUE_NAME=writing.evaluate
-WRITING_ROUTING_KEY=writing.evaluate
-
-WRITING_DLQ_NAME=writing.evaluate.dlq
-WRITING_DLQ_ROUTING_KEY=writing.evaluate.dlq
-MQ_MAX_RETRIES=3
-MQ_MESSAGE_TTL=120000
-
-HEALTH_CHECK_PORT=8081
+```bash
+cp .env.example .env
 ```
+
+Review and adjust the values in `.env` to match your local setup (e.g., RabbitMQ credentials, Ollama URL).
 
 ### 5. Run the worker
 
