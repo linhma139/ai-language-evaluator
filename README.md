@@ -1,87 +1,205 @@
-# IELTS & TOEIC AI Server
+# AI Language Evaluator — Microservice
 
-This is a professional Microservice backend designed to evaluate **IELTS & TOEIC Speaking and Writing** skills. It uses a combination of Google's Gemini, Google Cloud Speech-to-Text (ASR) for speaking, and a Local LLM (e.g., Phi-3-mini) over a gRPC connection for writing evaluation.
+An async Python microservice that evaluates IELTS/TOEIC writing essays using a local LLM, communicating via **RabbitMQ** message queue.
 
-## 🚀 Features
+## Architecture
 
-- **Speaking Module:** 
-  - Manage speaking sessions with Candidates.
-  - Automatically transcribe audio using Google Speech-to-Text (`LINEAR16`, `WEBM_OPUS`).
-  - Extract acoustic features via `librosa`.
-  - Interact with candidates dynamically via Gemini API based on a system prompt.
-- **Writing Module:**
-  - High-performance evaluation using a Local LLM via gRPC.
-  - Returns detailed sub-scores (Task Achievement, CC, LR, GRA) and text feedback using RegEx formatting.
-
-## 📂 Project Structure
-
-```text
-app/
-├── api/             # API Routers (speaking.py, writing.py) and Dependency Injection (deps.py)
-├── core/            # Configuration (pydantic-settings) and clean Logging system
-├── speaking/        # Audio Processing, ASR logic, LLM helpers, and Session management
-├── writing/         # Local LLM integration (llm_server.py) and Writing logic
-├── main.py          # Entry point for the FastAPI server (Middlewares, routers)
-└── models.py        # Pydantic data models for Request/Response validation
+```
+┌──────────────┐       ┌───────────────┐       ┌──────────────────┐       ┌────────────┐
+│  Main BE     │──────>│  RabbitMQ     │──────>│  server-ai       │──────>│  Ollama    │
+│  (Publisher) │       │  ai_service   │       │  (Python Worker) │       │  Local LLM │
+│              │<──────│  exchange     │<──────│                  │<──────│            │
+└──────────────┘       └───────────────┘       └──────────────────┘       └────────────┘
+     gRPC/REST           Message Queue            async consumer           HTTP API
 ```
 
-## 🛠 Prerequisites
+### Communication Pattern: RPC-over-RabbitMQ
 
-Ensure you have the following installed to run this project:
-- **Python 3.10 or 3.11** *(Important: Do not use newer versions like 3.12+ on Windows unless you have Visual Studio C++ Build Tools installed, to avoid `llama-cpp-python` compilation errors).*
-- **FFmpeg**: Must be installed and added to your system's PATH variable (used for audio fallback preprocessing if needed).
-- **Google Cloud Service Account** with Google Cloud Storage and Speech-to-Text APIs enabled.
+1. **BE** publishes a JSON message to exchange `ai_service` with routing key `writing.evaluate`, including `correlation_id` and `reply_to` callback queue.
+2. **Worker** consumes the message, calls the LLM via HTTP, and publishes the result back to the `reply_to` queue.
+3. **BE** matches the response by `correlation_id`.
 
-## ⚙️ Setup Environment
+### Resilience Features
 
-**1. Create a virtual environment & install dependencies:**
+- **Dead Letter Queue (DLQ)**: Failed messages are retried up to `MQ_MAX_RETRIES` times before being moved to `writing.evaluate.dlq`.
+- **Message TTL**: Messages expire after `MQ_MESSAGE_TTL` milliseconds.
+- **Persistent Messages**: All messages use `delivery_mode=PERSISTENT` for durability.
+- **Structured Error Codes**: `VALIDATION_ERROR`, `LLM_TIMEOUT`, `LLM_CONNECTION_ERROR`, `INTERNAL_ERROR`.
+- **Health Check**: HTTP endpoint at `/health` on port `HEALTH_CHECK_PORT`.
+
+## Project Structure
+
+```
+server-ai/
+├── app/
+│   ├── core/
+│   │   ├── config.py            # Pydantic settings (env-based)
+│   │   ├── health.py            # Health check HTTP server
+│   │   └── logger.py            # Structured logging
+│   ├── mq/
+│   │   ├── __init__.py
+│   │   ├── connection.py        # RabbitMQ connection manager
+│   │   └── consumer.py          # Writing queue consumer + DLQ + retry
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   └── writing.py           # Pydantic request/response models
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── evaluation_llm.py    # LLM evaluation business logic
+│   │   └── prompt_template.txt  # IELTS prompt template
+│   └── main.py                  # Entry point
+├── .env                         # Environment config (not committed)
+├── .gitignore
+├── requirements.txt
+├── test_publisher.py            # RabbitMQ test client
+└── LICENSE
+```
+
+## Prerequisites
+
+- **Python** 3.11+
+- **Docker** (for RabbitMQ)
+- **Ollama** running locally with the IELTS model
+
+## Quick Start
+
+### 1. Start RabbitMQ
+
 ```bash
-python -m venv venv
-source venv/bin/activate    # On Windows: venv\Scripts\activate
+docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
+```
+
+Management UI: [http://localhost:15672](http://localhost:15672) (guest/guest)
+
+### 2. Start Ollama with the IELTS model
+
+```bash
+ollama run hf.co/linhma139/Phi-3-IELTS-Scorer:Q4_K_M
+```
+
+### 3. Install dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
-**2. Setup Google Cloud & Environment Variables:**
-Place your Google Cloud Service Account JSON key inside the root directory and rename it to `service-account-key.json` (This file is ignored by git).
+### 4. Configure environment
 
-Create a `.env` file in the root directory:
+Create a `.env` file (see `.env.example`):
+
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
-GCS_BUCKET_NAME=your_gcs_bucket_name
-GOOGLE_APPLICATION_CREDENTIALS=./service-account-key.json
-PORT=8000
+LLM_API_URL=http://localhost:11434/api/generate
+LLM_MODEL_NAME=hf.co/linhma139/Phi-3-IELTS-Scorer:Q4_K_M
+LLM_TIMEOUT=120
+
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+MQ_PREFETCH_COUNT=1
+MQ_EXCHANGE_NAME=ai_service
+MQ_EXCHANGE_TYPE=direct
+
+WRITING_QUEUE_NAME=writing.evaluate
+WRITING_ROUTING_KEY=writing.evaluate
+
+WRITING_DLQ_NAME=writing.evaluate.dlq
+WRITING_DLQ_ROUTING_KEY=writing.evaluate.dlq
+MQ_MAX_RETRIES=3
+MQ_MESSAGE_TTL=120000
+
+HEALTH_CHECK_PORT=8081
 ```
 
-**3. Download Local LLM (For Writing):**
-Instead of downloading manually, we provide a setup script that safely downloads the optimal GGUF model via Hugging Face.
-Run the following command in your terminal:
-```bash
-python scripts/setup_model.py
-```
-*(This will download `Phi-3-mini-4k-instruct-q4.gguf` into `app/writing/models_gguf/` and display a progress bar).*
+### 5. Run the worker
 
-## 🚀 Running the Application
-
-This architecture splits the heavy ML inference workload using gRPC. You need to start two separate server processes.
-
-**1. Start the gRPC Local LLM Server:**
-This server loads the GGUF model and waits for generation requests.
-```bash
-python app/writing/llm_server.py
-```
-*(Runs on localhost:50051)*
-
-**2. Start the FastAPI Server:**
-Open a new terminal and run the main entry point:
 ```bash
 python app/main.py
 ```
-*(Runs on http://localhost:8000)*
 
-## 📖 API Documentation & Testing
-Once the FastAPI server is running, interactive API documentation is automatically generated:
-- **Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
-- **ReDoc:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
+Expected output:
 
-You can also test basic speaking functionalities directly by visiting the built-in UI at:
-[http://localhost:8000/ui/](http://localhost:8000/ui/)
+```
+INFO - Starting AI Microservice (RabbitMQ Worker)...
+INFO - Health check server running on http://0.0.0.0:8081/health
+INFO - Connected to RabbitMQ successfully.
+INFO - Exchange: 'ai_service' (direct) | Queue: 'writing.evaluate' | DLQ: 'writing.evaluate.dlq' | ...
+INFO - AI Worker is running. Waiting for messages...
+```
+
+### 6. Test
+
+```bash
+python test_publisher.py
+```
+
+### 7. Health check
+
+```bash
+curl http://localhost:8081/health
+# {"status": "healthy", "rabbitmq": "connected"}
+```
+
+## Message Contract
+
+### Request (publish to `ai_service` exchange, routing key `writing.evaluate`)
+
+```json
+{
+  "exam_type": "IELTS",
+  "task_type": "Task 2",
+  "question": "Some people think...",
+  "content": "It is often argued...",
+  "target_score": 7.0
+}
+```
+
+**Required AMQP properties:**
+- `correlation_id`: UUID for request-response matching
+- `reply_to`: callback queue name
+- `content_type`: `application/json`
+
+### Response (received on callback queue)
+
+**Success:**
+```json
+{
+  "status": "success",
+  "data": {
+    "overall_score": 7.0,
+    "sub_scores": {
+      "Task Achievement": 7.0,
+      "Coherence & Cohesion": 7.0,
+      "Lexical Resource": 6.5,
+      "Grammatical Range & Accuracy": 7.0
+    },
+    "detailed_feedback": "...",
+    "corrected_version": "",
+    "corrections": []
+  }
+}
+```
+
+**Error:**
+```json
+{
+  "status": "error",
+  "error_code": "LLM_TIMEOUT",
+  "error": "Failed after 3 retries: Ollama request timed out"
+}
+```
+
+**Error codes:** `VALIDATION_ERROR` | `LLM_TIMEOUT` | `LLM_CONNECTION_ERROR` | `INTERNAL_ERROR`
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Runtime | Python 3.11+ / asyncio |
+| Message Queue | RabbitMQ (aio-pika) |
+| HTTP Client | httpx (async, shared pool) |
+| Schema Validation | Pydantic v2 |
+| Config | pydantic-settings + .env |
+| Health Check | aiohttp |
+| LLM | Ollama (Phi-3-IELTS-Scorer) |
+
+## License
+
+MIT

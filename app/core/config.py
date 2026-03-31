@@ -1,23 +1,36 @@
-import os
 from pydantic_settings import BaseSettings
 
+
 class Settings(BaseSettings):
-    GEMINI_API_KEY: str = ""
-    GCS_BUCKET_NAME: str = ""
-    SYSTEM_PROMPT: str = (
-        "You are a linguistics expert and IELTS Speaking examiner. "
-        "The user's speech content will be provided alongside technical metrics (Pitch, Fluency). "
-        "Please analyze and comment on: "
-        "1. Grammar & Vocabulary. "
-        "2. Intonation (based on Pitch variance/standard deviation). "
-        "3. Fluency (based on WPM and Pause count). "
-        "Afterwards, please ask the next question to continue the IELTS Speaking Part 1 interview."
-    )
-    PORT: int = 8000
+    # LLM Configuration
+    LLM_API_URL: str = "http://localhost:11434/api/generate"
+    LLM_MODEL_NAME: str = "hf.co/linhma139/Phi-3-IELTS-Scorer:Q4_K_M"
+    LLM_TIMEOUT: int = 120  # seconds
+
+    # RabbitMQ Connection
+    RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
+    MQ_PREFETCH_COUNT: int = 1
+
+    # Exchange
+    MQ_EXCHANGE_NAME: str = "ai_service"
+    MQ_EXCHANGE_TYPE: str = "direct"
+
+    # Writing Queue
+    WRITING_QUEUE_NAME: str = "writing.evaluate"
+    WRITING_ROUTING_KEY: str = "writing.evaluate"
+
+    # Dead Letter Queue (DLQ)
+    WRITING_DLQ_NAME: str = "writing.evaluate.dlq"
+    WRITING_DLQ_ROUTING_KEY: str = "writing.evaluate.dlq"
+    MQ_MAX_RETRIES: int = 3
+    MQ_MESSAGE_TTL: int = 120000  # milliseconds (2 minutes)
+
+    # Health Check
+    HEALTH_CHECK_PORT: int = 8081
 
     class Config:
         env_file = ".env"
-        # Mute warnings missing items from .env
-        extra = "ignore" 
+        extra = "ignore"
+
 
 settings = Settings()
