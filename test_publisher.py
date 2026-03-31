@@ -1,20 +1,18 @@
 """
-Test publisher for AI Microservice RabbitMQ worker.
+Test publisher for AI Microservice RabbitMQ worker (Event-Driven version).
 Usage: python test_publisher.py
-
-Requires:
-  - RabbitMQ running at localhost:5672
-  - Worker running: python app/main.py
 """
 import json
 import uuid
 import asyncio
 import aio_pika
 
-# Match the env config (or read from .env if needed)
+# RabbitMQ Configuration
 RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
 EXCHANGE_NAME = "ai_service"
 ROUTING_KEY = "writing.evaluate"
+RESULT_ROUTING_KEY = "writing.result"
+RESULT_QUEUE_NAME = "writing.result"
 
 SAMPLE_QUESTION = (
     "Some people think that the best way to reduce crime is to give longer prison "
@@ -30,27 +28,37 @@ SAMPLE_ESSAY = (
 )
 
 
-async def test_rpc():
+async def test_event_driven():
     print("=" * 60)
-    print("🧪 AI Microservice - RabbitMQ Test Publisher")
+    print("🧪 AI Microservice - RabbitMQ Event-Driven Test")
     print("=" * 60)
 
-    connection = await aio_pika.connect_robust(RABBITMQ_URL)
+    try:
+        connection = await aio_pika.connect_robust(RABBITMQ_URL)
+    except Exception as e:
+        print(f"❌ Failed to connect to RabbitMQ: {e}")
+        return
+
     async with connection:
         channel = await connection.channel()
 
-        # Declare the same exchange the worker uses
+        # 1. Declare Exchange
         exchange = await channel.declare_exchange(
             EXCHANGE_NAME,
             type=aio_pika.ExchangeType.DIRECT,
             durable=True,
         )
 
-        # Declare an exclusive callback queue for receiving the response
-        callback_queue = await channel.declare_queue("", exclusive=True)
+        # 2. Declare and Bind Result Queue (Where BE listens)
+        result_queue = await channel.declare_queue(RESULT_QUEUE_NAME, durable=True)
+        await result_queue.bind(exchange, routing_key=RESULT_ROUTING_KEY)
+
         correlation_id = str(uuid.uuid4())
+        attempt_id = str(uuid.uuid4())
 
         request_payload = {
+            "attempt_id": attempt_id,
+            "response_id": str(uuid.uuid4()),
             "exam_type": "IELTS",
             "task_type": "Task 2",
             "question": SAMPLE_QUESTION,
@@ -58,34 +66,35 @@ async def test_rpc():
             "target_score": 7.0,
         }
 
-        print(f"\n📤 Publishing WritingRequest...")
+        print(f"\n📤 Publishing WritingRequest Event...")
         print(f"   Exchange: {EXCHANGE_NAME}")
         print(f"   Routing key: {ROUTING_KEY}")
-        print(f"   Exam: {request_payload['exam_type']} | Task: {request_payload['task_type']}")
-        print(f"   Essay length: {len(SAMPLE_ESSAY)} chars")
+        print(f"   Attempt ID: {attempt_id}")
         print(f"   Correlation ID: {correlation_id}")
         print("-" * 60)
 
-        # Publish the request via the named exchange
+        # 3. Publish without reply_to (Pure Event)
         await exchange.publish(
             aio_pika.Message(
                 body=json.dumps(request_payload).encode(),
                 correlation_id=correlation_id,
-                reply_to=callback_queue.name,
                 content_type="application/json",
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             ),
             routing_key=ROUTING_KEY,
         )
 
-        print("⏳ Waiting for LLM response (this may take 10-60s)...\n")
+        print(f"⏳ Waiting for Result Event on '{RESULT_ROUTING_KEY}'...\n")
 
-        # Wait for the response on callback queue
-        async with callback_queue.iterator() as queue_iter:
+        # 4. Listen for the result on the shared result queue
+        async with result_queue.iterator() as queue_iter:
             async for message in queue_iter:
                 async with message.process():
-                    if message.correlation_id == correlation_id:
-                        result = json.loads(message.body.decode())
-                        print("✅ Response received!")
+                    result = json.loads(message.body.decode())
+                    
+                    # Filter by correlation_id or attempt_id to ensure it's our message
+                    if message.correlation_id == correlation_id or result.get("attempt_id") == attempt_id:
+                        print("✅ Result Event received!")
                         print("=" * 60)
 
                         if result["status"] == "success":
@@ -95,20 +104,16 @@ async def test_rpc():
                             for key, val in data.get("sub_scores", {}).items():
                                 print(f"   • {key}: {val}")
                             print(f"\n📝 Detailed Feedback:")
-                            print(f"   {data['detailed_feedback'][:500]}...")
-                            if data.get("corrected_version"):
-                                print(f"\n✏️ Corrected Version: {data['corrected_version'][:200]}...")
-                            corrections = data.get("corrections", [])
-                            if corrections:
-                                print(f"\n🔍 Corrections ({len(corrections)}):")
-                                for c in corrections[:3]:
-                                    print(f"   [{c['error_type']}] '{c['original_text']}' → '{c['corrected_text']}'")
+                            print(f"   {data['detailed_feedback'][:300]}...")
                         else:
-                            print(f"❌ Error: {result.get('error', 'Unknown error')}")
+                            print(f"❌ Error [{result.get('error_code')}]: {result.get('error_message')}")
 
                         print("=" * 60)
                         return  # Done
 
 
 if __name__ == "__main__":
-    asyncio.run(test_rpc())
+    try:
+        asyncio.run(test_event_driven())
+    except KeyboardInterrupt:
+        print("\nTest cancelled by user.")

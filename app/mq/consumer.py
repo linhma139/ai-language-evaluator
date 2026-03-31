@@ -4,7 +4,7 @@ from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
 
 from core.logger import logger
 from core.config import settings
-from schemas.writing import WritingRequest, WritingFeedback
+from schemas.writing import WritingRequest, WritingFeedback, WritingResultEvent
 from services.evaluation_llm import evaluate_writing_with_local_llm
 
 
@@ -109,57 +109,52 @@ class WritingConsumer:
         """Process a single evaluation request with retry + DLQ support."""
         async with message.process():
             correlation_id = message.correlation_id
-            reply_to = message.reply_to
             retry_count = self._get_retry_count(message)
 
+            attempt_id = "unknown"
+            response_id = "unknown"
+
             logger.info(
-                f"Received message "
-                f"[correlation_id={correlation_id}] "
-                f"[retry={retry_count}/{settings.MQ_MAX_RETRIES}]"
+                f"Received message [correlation_id={correlation_id}] [retry={retry_count}/{settings.MQ_MAX_RETRIES}]"
             )
 
             try:
-                # Deserialize and validate request
-                body = json.loads(message.body.decode())
-                request = WritingRequest(**body)
+                # 1. Deserialize and validate request
+                try:
+                    body = json.loads(message.body.decode())
+                    request = WritingRequest(**body)
+                    attempt_id = request.attempt_id
+                    response_id = request.response_id
+                except (json.JSONDecodeError, ValueError) as e:
+                    error_msg = f"Invalid payload: {str(e)}"
+                    logger.error(f"{error_msg} [correlation_id={correlation_id}]")
+                    
+                    event = WritingResultEvent(
+                        status="error",
+                        attempt_id=attempt_id,
+                        response_id=response_id,
+                        error_code=ErrorCode.VALIDATION_ERROR,
+                        error_message=error_msg
+                    )
+                    await self._publish_result(event, correlation_id)
+                    await self._send_to_dlq(message, error_msg)
+                    return
 
-                logger.info(
-                    f"Processing: {request.exam_type} {request.task_type} "
-                    f"[correlation_id={correlation_id}]"
-                )
+                logger.info(f"Processing: {request.exam_type} {request.task_type} [attempt={attempt_id}]")
 
-                # Call LLM evaluation service
+                # 2. Call LLM evaluation service
                 feedback: WritingFeedback = await evaluate_writing_with_local_llm(
                     request, correlation_id=correlation_id
                 )
 
-                # Build success response
-                response_payload = {
-                    "status": "success",
-                    "data": feedback.model_dump(),
-                }
-
-            except json.JSONDecodeError as e:
-                # Bad payload — no retry, send to DLQ immediately
-                error_msg = f"Invalid JSON payload: {e}"
-                logger.error(f"{error_msg} [correlation_id={correlation_id}]")
-                response_payload = {
-                    "status": "error",
-                    "error_code": ErrorCode.VALIDATION_ERROR,
-                    "error": error_msg,
-                }
-                await self._send_to_dlq(message, error_msg)
-
-            except ValueError as e:
-                # Pydantic validation failed — no retry
-                error_msg = f"Request validation failed: {e}"
-                logger.error(f"{error_msg} [correlation_id={correlation_id}]")
-                response_payload = {
-                    "status": "error",
-                    "error_code": ErrorCode.VALIDATION_ERROR,
-                    "error": error_msg,
-                }
-                await self._send_to_dlq(message, error_msg)
+                # 3. Build success event
+                event = WritingResultEvent(
+                    status="success",
+                    attempt_id=attempt_id,
+                    response_id=response_id,
+                    data=feedback
+                )
+                await self._publish_result(event, correlation_id)
 
             except Exception as e:
                 error_type = type(e).__name__
@@ -174,13 +169,11 @@ class WritingConsumer:
                     error_code = ErrorCode.INTERNAL_ERROR
 
                 logger.error(
-                    f"Error [{error_code}]: {error_msg} "
-                    f"[correlation_id={correlation_id}] "
-                    f"[retry={retry_count}/{settings.MQ_MAX_RETRIES}]",
+                    f"Error [{error_code}]: {error_msg} [correlation_id={correlation_id}] [retry={retry_count}/{settings.MQ_MAX_RETRIES}]",
                     exc_info=True,
                 )
 
-                # Retry logic: requeue with incremented retry count
+                # Retry logic
                 if retry_count < settings.MQ_MAX_RETRIES:
                     headers = dict(message.headers or {})
                     headers["x-retry-count"] = retry_count + 1
@@ -190,44 +183,45 @@ class WritingConsumer:
                             body=message.body,
                             headers=headers,
                             correlation_id=correlation_id,
-                            reply_to=reply_to,
                             content_type="application/json",
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                         ),
                         routing_key=settings.WRITING_ROUTING_KEY,
                     )
-                    logger.info(
-                        f"Message requeued (retry {retry_count + 1}/{settings.MQ_MAX_RETRIES}) "
-                        f"[correlation_id={correlation_id}]"
-                    )
-                    return  # Don't reply yet — will be retried
+                    logger.info(f"Message requeued (retry {retry_count + 1}) [correlation_id={correlation_id}]")
+                    return
 
-                # Max retries exceeded → DLQ + reply error
+                # Max retries exceeded → Send failure event + DLQ
+                event = WritingResultEvent(
+                    status="error",
+                    attempt_id=attempt_id,
+                    response_id=response_id,
+                    error_code=error_code,
+                    error_message=f"Failed after {settings.MQ_MAX_RETRIES} retries: {error_msg}"
+                )
+                await self._publish_result(event, correlation_id)
                 await self._send_to_dlq(message, error_msg)
-                response_payload = {
-                    "status": "error",
-                    "error_code": error_code,
-                    "error": f"Failed after {settings.MQ_MAX_RETRIES} retries: {error_msg}",
-                }
 
-            # Publish result back if reply_to is provided (RPC pattern)
-            if reply_to:
-                await self._channel.default_exchange.publish(
-                    aio_pika.Message(
-                        body=json.dumps(response_payload).encode(),
-                        correlation_id=correlation_id,
-                        content_type="application/json",
-                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                    ),
-                    routing_key=reply_to,
-                )
-                logger.info(
-                    f"Result published to '{reply_to}' "
-                    f"[correlation_id={correlation_id}] "
-                    f"[status={response_payload['status']}]"
-                )
-            else:
-                logger.info(
-                    f"No reply_to set. Result: {response_payload['status']} "
-                    f"[correlation_id={correlation_id}]"
-                )
+    async def _publish_result(
+        self, 
+        event: WritingResultEvent, 
+        correlation_id: str
+    ) -> None:
+        """Publish result to the configured result routing key."""
+        payload = event.model_dump()
+        message = aio_pika.Message(
+            body=json.dumps(payload).encode(),
+            correlation_id=correlation_id,
+            content_type="application/json",
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+        )
+
+        # Always publish to the results event key (EDA)
+        await self._exchange.publish(
+            message,
+            routing_key=settings.WRITING_RESULT_ROUTING_KEY
+        )
+        logger.info(
+            f"Result Event published to '{settings.WRITING_RESULT_ROUTING_KEY}' "
+            f"[attempt={event.attempt_id}] [status={event.status}]"
+        )

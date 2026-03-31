@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # Writing Queue
     WRITING_QUEUE_NAME: str = "writing.evaluate"
     WRITING_ROUTING_KEY: str = "writing.evaluate"
+    WRITING_RESULT_ROUTING_KEY: str = "writing.result"
 
     # Dead Letter Queue (DLQ)
     WRITING_DLQ_NAME: str = "writing.evaluate.dlq"

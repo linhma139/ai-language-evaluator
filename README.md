@@ -2,29 +2,34 @@
 
 An async Python microservice that evaluates IELTS/TOEIC writing essays using a local LLM, communicating via **RabbitMQ** message queue.
 
-## Architecture
+## Architecture: Event-Driven Architecture (EDA)
+
+The microservice follows a pure asynchronous, event-driven pattern. It doesn't use the standard request-response RPC; instead, it consumes "Evaluation Request" events and publishes "Evaluation Result" events.
 
 ```
 ┌──────────────┐       ┌───────────────┐       ┌──────────────────┐       ┌────────────┐
 │  Main BE     │──────>│  RabbitMQ     │──────>│  server-ai       │──────>│  Ollama    │
-│  (Publisher) │       │  ai_service   │       │  (Python Worker) │       │  Local LLM │
-│              │<──────│  exchange     │<──────│                  │<──────│            │
-└──────────────┘       └───────────────┘       └──────────────────┘       └────────────┘
-     gRPC/REST           Message Queue            async consumer           HTTP API
+│  (Publisher) │       │  writing.eval │       │  (Python Worker) │       │  Local LLM │
+└──────────────┘       └──────┬────────┘       └────────┬─────────┘       └────────────┘
+                              │                         │
+┌──────────────┐              │                         │
+│  Main BE     │<─────────────┴─────────────────────────┘
+│  (Subscriber)│         writing.result
+└──────────────┘         (Result Event)
 ```
 
-### Communication Pattern: RPC-over-RabbitMQ
+### Communication Flow
 
-1. **BE** publishes a JSON message to exchange `ai_service` with routing key `writing.evaluate`, including `correlation_id` and `reply_to` callback queue.
-2. **Worker** consumes the message, calls the LLM via HTTP, and publishes the result back to the `reply_to` queue.
-3. **BE** matches the response by `correlation_id`.
+1. **BE** publishes a `WritingRequest` event to the `ai_service` exchange with routing key `writing.evaluate`.
+2. **Worker** consumes the event, calls the LLM, and publishes a `WritingResultEvent` to the same exchange with routing key `writing.result`.
+3. **BE** (or any other service) listens to `writing.result` to process the feedback.
 
 ### Resilience Features
 
 - **Dead Letter Queue (DLQ)**: Failed messages are retried up to `MQ_MAX_RETRIES` times before being moved to `writing.evaluate.dlq`.
-- **Message TTL**: Messages expire after `MQ_MESSAGE_TTL` milliseconds.
+- **Automatic Error Reporting**: Even if a fatal error occurs (validation, timeout), a "Failure Event" is published back to BE so it can update the user's status.
+- **Message TTL**: Messages expire after `MQ_MESSAGE_TTL` milliseconds if not consumed.
 - **Persistent Messages**: All messages use `delivery_mode=PERSISTENT` for durability.
-- **Structured Error Codes**: `VALIDATION_ERROR`, `LLM_TIMEOUT`, `LLM_CONNECTION_ERROR`, `INTERNAL_ERROR`.
 - **Health Check**: HTTP endpoint at `/health` on port `HEALTH_CHECK_PORT`.
 
 ## Project Structure
@@ -37,29 +42,17 @@ server-ai/
 │   │   ├── health.py            # Health check HTTP server
 │   │   └── logger.py            # Structured logging
 │   ├── mq/
-│   │   ├── __init__.py
 │   │   ├── connection.py        # RabbitMQ connection manager
-│   │   └── consumer.py          # Writing queue consumer + DLQ + retry
+│   │   └── consumer.py          # Pure EDA consumer + DLQ + retry
 │   ├── schemas/
-│   │   ├── __init__.py
-│   │   └── writing.py           # Pydantic request/response models
+│   │   └── writing.py           # Pydantic Request/Feedback/Event models
 │   ├── services/
-│   │   ├── __init__.py
-│   │   ├── evaluation_llm.py    # LLM evaluation business logic
+│   │   ├── evaluation_llm.py    # LLM evaluation logic
 │   │   └── prompt_template.txt  # IELTS prompt template
 │   └── main.py                  # Entry point
-├── .env                         # Environment config (not committed)
-├── .gitignore
-├── requirements.txt
-├── test_publisher.py            # RabbitMQ test client
-└── LICENSE
+├── test_publisher.py            # EDA test client
+└── README.md
 ```
-
-## Prerequisites
-
-- **Python** 3.11+
-- **Docker** (for RabbitMQ)
-- **Ollama** running locally with the IELTS model
 
 ## Quick Start
 
@@ -69,65 +62,26 @@ server-ai/
 docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
 ```
 
-Management UI: [http://localhost:15672](http://localhost:15672) (guest/guest)
-
-### 2. Start Ollama with the IELTS model
-
-```bash
-ollama run hf.co/linhma139/Phi-3-IELTS-Scorer:Q4_K_M
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configure environment
-
-Create a `.env` file by copying the template:
-
-```bash
-cp .env.example .env
-```
-
-Review and adjust the values in `.env` to match your local setup (e.g., RabbitMQ credentials, Ollama URL).
-
-### 5. Run the worker
+### 2. Run the worker
 
 ```bash
 python app/main.py
 ```
 
-Expected output:
-
-```
-INFO - Starting AI Microservice (RabbitMQ Worker)...
-INFO - Health check server running on http://0.0.0.0:8081/health
-INFO - Connected to RabbitMQ successfully.
-INFO - Exchange: 'ai_service' (direct) | Queue: 'writing.evaluate' | DLQ: 'writing.evaluate.dlq' | ...
-INFO - AI Worker is running. Waiting for messages...
-```
-
-### 6. Test
+### 3. Test with Event-Driven flow
 
 ```bash
 python test_publisher.py
 ```
 
-### 7. Health check
+## Message Contract (v2 - EDA)
 
-```bash
-curl http://localhost:8081/health
-# {"status": "healthy", "rabbitmq": "connected"}
-```
-
-## Message Contract
-
-### Request (publish to `ai_service` exchange, routing key `writing.evaluate`)
+### Request Event (`writing.evaluate`)
 
 ```json
 {
+  "attempt_id": "uuid-v4",
+  "response_id": "uuid-v4",
   "exam_type": "IELTS",
   "task_type": "Task 2",
   "question": "Some people think...",
@@ -136,38 +90,37 @@ curl http://localhost:8081/health
 }
 ```
 
-**Required AMQP properties:**
-- `correlation_id`: UUID for request-response matching
-- `reply_to`: callback queue name
-- `content_type`: `application/json`
+### Result Event (`writing.result`)
 
-### Response (received on callback queue)
-
-**Success:**
+**Success Payload:**
 ```json
 {
   "status": "success",
+  "attempt_id": "uuid-v4",
+  "response_id": "uuid-v4",
   "data": {
-    "overall_score": 7.0,
+    "overall_score": 7.5,
     "sub_scores": {
-      "Task Achievement": 7.0,
-      "Coherence & Cohesion": 7.0,
-      "Lexical Resource": 6.5,
-      "Grammatical Range & Accuracy": 7.0
+      "Task Achievement": 7.5,
+      "Coherence & Cohesion": 8.0,
+      "Lexical Resource": 7.0,
+      "Grammatical Range & Accuracy": 7.5
     },
     "detailed_feedback": "...",
-    "corrected_version": "",
-    "corrections": []
+    "corrected_version": "...",
+    "corrections": [...]
   }
 }
 ```
 
-**Error:**
+**Failure Payload:**
 ```json
 {
   "status": "error",
+  "attempt_id": "uuid-v4",
+  "response_id": "uuid-v4",
   "error_code": "LLM_TIMEOUT",
-  "error": "Failed after 3 retries: Ollama request timed out"
+  "error_message": "Failed after 3 retries: Ollama request timed out"
 }
 ```
 
@@ -175,16 +128,8 @@ curl http://localhost:8081/health
 
 ## Tech Stack
 
-| Component | Technology |
-|-----------|-----------|
-| Runtime | Python 3.11+ / asyncio |
-| Message Queue | RabbitMQ (aio-pika) |
-| HTTP Client | httpx (async, shared pool) |
-| Schema Validation | Pydantic v2 |
-| Config | pydantic-settings + .env |
-| Health Check | aiohttp |
-| LLM | Ollama (Phi-3-IELTS-Scorer) |
-
-## License
-
-MIT
+- **Runtime**: Python 3.11+ / asyncio
+- **Queue**: RabbitMQ (aio-pika)
+- **Validation**: Pydantic v2
+- **Config**: Pydantic-settings
+- **LLM**: Ollama (Phi-3-IELTS-Scorer)

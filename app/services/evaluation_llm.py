@@ -108,6 +108,8 @@ async def evaluate_writing_with_local_llm(
             detailed_feedback = feedback_split[1].strip()
 
         return WritingFeedback(
+            attempt_id=request.attempt_id,
+            response_id=request.response_id,
             overall_score=overall,
             sub_scores={
                 "Task Achievement": ta_score,
