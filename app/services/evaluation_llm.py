@@ -5,6 +5,7 @@ from typing import Optional
 from core.logger import logger
 from core.config import settings
 from schemas.writing import WritingRequest, WritingFeedback
+from services.writing_guardrail import check_word_count_guardrail
 
 # Shared HTTP client - reuse connection pool across requests
 _http_client: httpx.AsyncClient | None = None
@@ -47,6 +48,16 @@ async def evaluate_writing_with_local_llm(
 
     log_prefix = f"[cid={correlation_id}]" if correlation_id else ""
 
+    # 1. Check for Early Exit (Guardrail)
+    guardrail_result = check_word_count_guardrail(request)
+    if guardrail_result:
+        logger.info(
+            f"{log_prefix} Early Exit triggered: Task='{request.task_type}', "
+            f"Band={guardrail_result.overall_score}"
+        )
+        return guardrail_result
+
+    # 2. Proceed with LLM Evaluation
     prompt = (
         _SYSTEM_PROMPT + "\n"
         "<|user|>\n"
