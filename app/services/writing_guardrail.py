@@ -1,6 +1,6 @@
 import re
 from typing import Optional
-from app.schemas.writing import WritingRequest, WritingFeedback
+from schemas.writing import WritingRequest, WritingFeedback
 
 # IELTS Band Descriptors thresholds for low word counts
 # (limit, band_score, reason)

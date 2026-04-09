@@ -15,17 +15,19 @@ RESULT_ROUTING_KEY = "writing.result"
 RESULT_QUEUE_NAME = "writing.result"
 
 SAMPLE_QUESTION = (
-    "Some people think that the best way to reduce crime is to give longer prison "
-    "sentences. Others, however, believe there are better alternative ways of "
-    "reducing crime. Discuss both views and give your opinion."
+    "Some people say that the education system is the only critical factor to development of a country. To what extent do you agree or disagree with this statement?"
 )
 
-SAMPLE_ESSAY = (
-    "It is often argued that imposing longer prison sentences is the most effective "
-    "method to reduce crime rates. However, others contend that alternative approaches, "
-    "such as education and rehabilitation programs, are more effective. This essay will "
-    "discuss both perspectives before presenting my own opinion.\n\n"
-)
+SAMPLE_ESSAY = """Education plays a vital role in the development of a country. Therefore, some people think that the education system is the only important factor to the development of a country and they may be right.
+
+Education is the foundation of well developed society. It is rightly said, ‘education is a ladder for success’. If all the people of any country are educated then they becomes broadminded, civilized and progressive. An educated society improves the standard of life as well.
+
+Besides this, education also creates a good employment opportunity and therefore country does not have to suffer from big problems like unemployment. Educated peoples are more aware of problems such as pollution and many more. A country becomes technologically advanced because of educated people.
+Not only this, but also by giving importance to education, the nations can get rid of problems like iliteracy, poverty, unemployment and population growth that delay the progress of a nation. The crime rate can also be kept under check. The standard of living of the people will go up. If the nations wants to be progressive it is very important that the people are more educated and progressive. Any country can become more technologically advanced and developed because of education.
+
+However, there are other factors that also play an important role in the development of a country. Such as governments have to encouraged people to do so._
+
+In conclusion, I would like to say that a good education system will lead to a developed country."""
 
 
 async def test_event_driven():

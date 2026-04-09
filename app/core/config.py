@@ -3,9 +3,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # LLM Configuration
-    LLM_API_URL: str = "http://localhost:11434/api/generate"
-    LLM_MODEL_NAME: str = "hf.co/linhma139/Phi-3-IELTS-Scorer:Q4_K_M"
-    LLM_TIMEOUT: int = 120  # seconds
+    LLM_API_URL: str = ""
+    LLM_MODEL_NAME: str = "" # Note: Có thể không cần cho HF Endpoint nếu token URL đã chứa endpoint.
+    HF_TOKEN: str = ""
+    LLM_TIMEOUT: int = 300  # seconds
 
     # RabbitMQ Connection
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"

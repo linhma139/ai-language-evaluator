@@ -12,7 +12,9 @@ _http_client: httpx.AsyncClient | None = None
 
 # Load prompt template once at module level
 _PROMPT_TEMPLATE_PATH = Path(__file__).parent / "prompt_template.txt"
-_SYSTEM_PROMPT = _PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
+_raw_system_prompt = _PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
+# Clean up markers like <|system|> and <|end|> for Chat API compatibility
+_SYSTEM_PROMPT = re.sub(r"<\|system\|>|<\|end\|>", "", _raw_system_prompt).strip()
 
 
 def _get_http_client() -> httpx.AsyncClient:
@@ -44,7 +46,7 @@ async def evaluate_writing_with_local_llm(
     request: WritingRequest,
     correlation_id: Optional[str] = None,
 ) -> WritingFeedback:
-    """Call REST API (Ollama) to evaluate Writing and return WritingFeedback."""
+    """Call REST API (Hugging Face) to evaluate Writing and return WritingFeedback."""
 
     log_prefix = f"[cid={correlation_id}]" if correlation_id else ""
 
@@ -57,34 +59,61 @@ async def evaluate_writing_with_local_llm(
         )
         return guardrail_result
 
-    # 2. Proceed with LLM Evaluation
-    prompt = (
-        _SYSTEM_PROMPT + "\n"
-        "<|user|>\n"
+    # 2. Prepare content for LLM Evaluation
+    user_prompt = (
         f"Please evaluate this IELTS {request.task_type} essay.\n\n"
         f"Question:\n{request.question}\n\n"
-        f"Essay:\n{request.content}<|end|>\n"
-        "<|assistant|>\n"
+        f"Essay:\n{request.content}"
     )
 
     try:
         client = _get_http_client()
+        headers = {
+            "Authorization": f"Bearer {settings.HF_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        
+        api_url = settings.LLM_API_URL.rstrip('/')
+        if not api_url.endswith("/v1/chat/completions"):
+            if api_url.endswith("/v1"):
+                api_url += "/chat/completions"
+            else:
+                api_url += "/v1/chat/completions"
+                
         payload = {
-            "model": settings.LLM_MODEL_NAME,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.2,
-                "num_ctx": 3080,
-            },
+            "model": "linhma139/Phi-3-IELTS-Scorer",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": _SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt
+                }
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.2
         }
 
-        logger.info(f"{log_prefix} Sending evaluation request to {settings.LLM_API_URL}")
-        response = await client.post(settings.LLM_API_URL, json=payload)
+        logger.info(f"{log_prefix} Sending evaluation request to Endpoint: {api_url}")
+        response = await client.post(api_url, headers=headers, json=payload)
         response.raise_for_status()
 
         response_data = response.json()
-        response_text = response_data.get("response", "")
+        response_text = ""
+        
+        # Parse the JSON response (OpenAI schema format)
+        if "choices" in response_data and len(response_data["choices"]) > 0:
+            choice = response_data["choices"][0]
+            if "message" in choice:
+                 response_text = choice["message"].get("content", "")
+            else:
+                 response_text = choice.get("text", "")
+        elif isinstance(response_data, list) and len(response_data) > 0:
+            response_text = response_data[0].get("generated_text", "")
+        elif isinstance(response_data, dict):
+            response_text = response_data.get("generated_text", "") or response_data.get("response", "")
 
         # Parse scores with warnings on failure
         overall = _parse_score(
