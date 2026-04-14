@@ -14,15 +14,15 @@ The microservice follows a pure asynchronous, event-driven pattern. It doesn't u
                               │                         │
 ┌──────────────┐              │                         │
 │  Main BE     │<─────────────┴─────────────────────────┘
-│  (Subscriber)│         writing.result
+│  (Subscriber)│         exam.writing.scored
 └──────────────┘         (Result Event)
 ```
 
 ### Communication Flow
 
-1. **BE** publishes a `WritingRequest` event to the `ai_service` exchange with routing key `writing.evaluate`.
-2. **Worker** consumes the event, calls the LLM, and publishes a `WritingResultEvent` to the same exchange with routing key `writing.result`.
-3. **BE** (or any other service) listens to `writing.result` to process the feedback.
+1. **BE** publishes a `WritingRequest` event to the `eventbus` exchange with routing key `exam.writing.submitted`.
+2. **Worker** consumes the event, calls the LLM, and publishes a `WritingResultEvent` to the same exchange with routing key `exam.writing.scored`.
+3. **BE** (or any other service) listens to `exam.writing.scored` to process the feedback.
 
 ### Resilience Features
 
@@ -76,7 +76,7 @@ python test_publisher.py
 
 ## Message Contract (v2 - EDA)
 
-### Request Event (`writing.evaluate`)
+### Request Event (`exam.writing.submitted`)
 
 ```json
 {
@@ -90,7 +90,7 @@ python test_publisher.py
 }
 ```
 
-### Result Event (`writing.result`)
+### Result Event (`exam.writing.scored`)
 
 **Success Payload:**
 ```json
