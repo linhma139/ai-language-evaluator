@@ -9,10 +9,10 @@ import aio_pika
 
 # RabbitMQ Configuration
 RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
-EXCHANGE_NAME = "ai_service"
-ROUTING_KEY = "writing.evaluate"
-RESULT_ROUTING_KEY = "writing.result"
-RESULT_QUEUE_NAME = "writing.result"
+EXCHANGE_NAME = "eventbus"
+ROUTING_KEY = "exam.writing.submitted"
+RESULT_ROUTING_KEY = "exam.writing.scored"
+RESULT_QUEUE_NAME = "test.exam.writing.scored"
 
 SAMPLE_QUESTION = (
     "Some people say that the education system is the only critical factor to development of a country. To what extent do you agree or disagree with this statement?"
@@ -47,7 +47,7 @@ async def test_event_driven():
         # 1. Declare Exchange
         exchange = await channel.declare_exchange(
             EXCHANGE_NAME,
-            type=aio_pika.ExchangeType.DIRECT,
+            type=aio_pika.ExchangeType.TOPIC,
             durable=True,
         )
 

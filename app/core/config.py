@@ -13,17 +13,17 @@ class Settings(BaseSettings):
     MQ_PREFETCH_COUNT: int = 1
 
     # Exchange
-    MQ_EXCHANGE_NAME: str = "ai_service"
-    MQ_EXCHANGE_TYPE: str = "direct"
+    MQ_EXCHANGE_NAME: str = "eventbus"
+    MQ_EXCHANGE_TYPE: str = "topic"
 
     # Writing Queue
     WRITING_QUEUE_NAME: str = "writing.evaluate"
-    WRITING_ROUTING_KEY: str = "writing.evaluate"
-    WRITING_RESULT_ROUTING_KEY: str = "writing.result"
+    WRITING_ROUTING_KEY: str = "exam.writing.submitted"
+    WRITING_RESULT_ROUTING_KEY: str = "exam.writing.scored"
 
     # Dead Letter Queue (DLQ)
     WRITING_DLQ_NAME: str = "writing.evaluate.dlq"
-    WRITING_DLQ_ROUTING_KEY: str = "writing.evaluate.dlq"
+    WRITING_DLQ_ROUTING_KEY: str = "exam.writing.submitted.dlq"
     MQ_MAX_RETRIES: int = 3
     MQ_MESSAGE_TTL: int = 120000  # milliseconds (2 minutes)
 
