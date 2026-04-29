@@ -1,14 +1,28 @@
-from pydantic import BaseModel
 from typing import List, Optional, Literal, Dict
+from pydantic import BaseModel, field_validator
 
 class WritingRequest(BaseModel):
     attempt_id: str
     response_id: str
-    exam_type: Literal["IELTS", "TOEIC"]
+    exam_type: str  # e.g., "IELTS", "TOEIC", or variations like "IELTS_ACADEMIC"
     task_type: str  # e.g., "Task 1", "Task 2", "Email", "Essay"
     question: str
     content: str
     target_score: Optional[float] = None
+
+    @field_validator("exam_type", mode="before")
+    @classmethod
+    def validate_exam_type(cls, v: str) -> str:
+        if not isinstance(v, str):
+            raise ValueError("exam_type must be a string")
+        
+        v_upper = v.upper()
+        if "IELTS" in v_upper:
+            return "IELTS"
+        if "TOEIC" in v_upper:
+            return "TOEIC"
+            
+        raise ValueError("exam_type must contain either 'IELTS' or 'TOEIC'")
 
 class ErrorCorrection(BaseModel):
     original_text: str

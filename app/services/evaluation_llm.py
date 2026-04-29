@@ -61,7 +61,7 @@ async def evaluate_writing_with_local_llm(
 
     # 2. Prepare content for LLM Evaluation
     user_prompt = (
-        f"Please evaluate this IELTS {request.task_type} essay.\n\n"
+        f"Please evaluate this {request.exam_type} {request.task_type} essay.\n\n"
         f"Question:\n{request.question}\n\n"
         f"Essay:\n{request.content}"
     )

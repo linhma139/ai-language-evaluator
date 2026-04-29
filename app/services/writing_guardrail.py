@@ -63,7 +63,7 @@ def check_word_count_guardrail(request: WritingRequest) -> Optional[WritingFeedb
                     f"### Early Exit Analysis\n"
                     f"**Word Count:** {word_count} words\n\n"
                     f"{reason}\n\n"
-                    f"**Note:** According to official IELTS Band Descriptors, an essay with significantly low word count "
+                    f"**Note:** According to official {request.exam_type} standards, an essay with significantly low word count "
                     f"cannot be fully assessed for proficiency and is capped at lower bands. "
                     f"A full AI evaluation was skipped to ensure consistency with examiner standards."
                 ),
