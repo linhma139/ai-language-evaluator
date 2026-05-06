@@ -5,7 +5,7 @@ from typing import Optional
 from core.logger import logger
 from core.config import settings
 from schemas.writing import WritingRequest, WritingFeedback
-from services.writing_guardrail import check_word_count_guardrail
+from services.writing_guardrail import check_word_count_guardrail, classify_task_type
 
 # Shared HTTP client - reuse connection pool across requests
 _http_client: httpx.AsyncClient | None = None
@@ -59,9 +59,13 @@ async def evaluate_writing_with_local_llm(
         )
         return guardrail_result
 
-    # 2. Prepare content for LLM Evaluation
+    # 2. Classify task type from question keywords
+    resolved_task = classify_task_type(request.question, request.task_type)
+    logger.info(f"{log_prefix} Classified task: '{request.task_type}' → '{resolved_task}'")
+
+    # 3. Prepare content for LLM Evaluation
     user_prompt = (
-        f"Please evaluate this {request.exam_type} {request.task_type} essay.\n\n"
+        f"Please evaluate this {request.exam_type} {resolved_task} essay.\n\n"
         f"Question:\n{request.question}\n\n"
         f"Essay:\n{request.content}"
     )
